@@ -1,0 +1,157 @@
+# ============================================================
+# Pipeline Config : top_20_content_by_premium_subscriber_watch_time_monthly
+# Owner           : Peacock Data Engineering
+# Last Updated    : 2025-01-01
+# Schedule        : 0 8 1 * *  (08:00 UTC, 1st of every month)
+# ============================================================
+
+pipeline:
+  name: top_20_content_by_premium_subscriber_watch_time_monthly
+  description: >
+    Ranks the top 20 content titles by total premium-subscriber watch-time
+    minutes for the previous full calendar month. Writes partitioned results
+    to the Gold Delta table gold_top20_content_by_premium_watch_time_monthly.
+  schedule: "0 8 1 * *"
+  owner: peacock-data-engineering
+  tags:
+    - gold
+    - content
+    - premium
+    - monthly
+
+# ──────────────────────────────────────────────
+# INPUT / OUTPUT
+# ──────────────────────────────────────────────
+tables:
+  input:
+    - name: viewing_sessions
+      description: Raw viewing session events with duration_minutes per subscriber
+    - name: subscriber_profiles
+      description: Subscriber metadata including plan type and active status
+    - name: content_catalog
+      description: Content metadata (title, genre, type, release year, active flag)
+  output:
+    name: gold_top20_content_by_premium_watch_time_monthly
+    format: delta
+    partition_by: month_start_date
+    write_mode: overwrite               # idempotent monthly partition overwrite
+    optimize_after_write: true
+    z_order_by: content_id
+
+# ──────────────────────────────────────────────
+# BUSINESS LOGIC PARAMETERS
+# ──────────────────────────────────────────────
+logic:
+  subscriber_filter:
+    plan:      premium                  # case-insensitive match
+    is_active: true                     # churned / suspended excluded
+  session_filter:
+    exclude_null_duration:  true
+    exclude_zero_duration:  true
+  ranking:
+    method_tie_safe:        DENSE_RANK
+    method_deterministic:   ROW_NUMBER
+    tiebreak_column:        content_id
+    tiebreak_order:         ASC
+    top_n:                  20
+  content_filter:
+    exclude_inactive:       true        # content_catalog.is_active = FALSE excluded
+
+# ──────────────────────────────────────────────
+# ENVIRONMENT: DEV
+# ──────────────────────────────────────────────
+environments:
+  dev:
+    databricks:
+      conn_id:       databricks_dev
+      cluster_id:    0101-dev-cluster
+      notebook_path: /Repos/peacock/dev/pipelines/top_20_content_by_premium_subscriber_watch_time_monthly_notebook
+      spark_conf:
+        spark.sql.shuffle.partitions: "8"
+        spark.databricks.delta.optimizeWrite.enabled: "true"
+    database:
+      catalog:  peacock_dev
+      schema:   gold
+    slack:
+      conn_id:  slack_webhook_dev
+      channel:  "#data-alerts-dev"
+    retries:       1
+    retry_delay_minutes: 5
+
+# ──────────────────────────────────────────────
+# ENVIRONMENT: STAGE
+# ──────────────────────────────────────────────
+  stage:
+    databricks:
+      conn_id:       databricks_stage
+      cluster_id:    0101-stage-cluster
+      notebook_path: /Repos/peacock/stage/pipelines/top_20_content_by_premium_subscriber_watch_time_monthly_notebook
+      spark_conf:
+        spark.sql.shuffle.partitions: "32"
+        spark.databricks.delta.optimizeWrite.enabled: "true"
+    database:
+      catalog:  peacock_stage
+      schema:   gold
+    slack:
+      conn_id:  slack_webhook_stage
+      channel:  "#data-alerts-stage"
+    retries:       2
+    retry_delay_minutes: 10
+
+# ──────────────────────────────────────────────
+# ENVIRONMENT: PROD
+# ──────────────────────────────────────────────
+  prod:
+    databricks:
+      conn_id:       databricks_prod
+      cluster_id:    0101-prod-cluster
+      notebook_path: /Repos/peacock/prod/pipelines/top_20_content_by_premium_subscriber_watch_time_monthly_notebook
+      spark_conf:
+        spark.sql.shuffle.partitions: "200"
+        spark.databricks.delta.optimizeWrite.enabled: "true"
+        spark.databricks.delta.autoCompact.enabled:   "true"
+    database:
+      catalog:  peacock_prod
+      schema:   gold
+    slack:
+      conn_id:  slack_webhook_prod
+      channel:  "#data-alerts-prod"
+    retries:       2
+    retry_delay_minutes: 10
+
+# ──────────────────────────────────────────────
+# DATA QUALITY CHECKS (run inside notebook)
+# ──────────────────────────────────────────────
+data_quality:
+  checks:
+    - name: row_count_equals_20
+      description: Final output must contain exactly 20 rows
+      type: exact_count
+      expected: 20
+    - name: no_null_content_ids
+      description: content_id must never be NULL in output
+      type: null_check
+      column: content_id
+    - name: no_null_watch_time
+      description: total_watch_time_minutes must never be NULL
+      type: null_check
+      column: total_watch_time_minutes
+    - name: positive_watch_time
+      description: All watch-time values must be > 0
+      type: range_check
+      column: total_watch_time_minutes
+      min: 1
+    - name: rank_position_range
+      description: rank_position values must be between 1 and 20 inclusive
+      type: range_check
+      column: rank_position
+      min: 1
+      max: 20
+    - name: unique_rank_positions
+      description: No duplicate rank_position values allowed
+      type: unique_check
+      column: rank_position
+    - name: month_start_date_not_null
+      description: Partition column month_start_date must not be NULL
+      type: null_check
+      column: month_start_date

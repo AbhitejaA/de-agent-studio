@@ -1,0 +1,124 @@
+# =============================================================================
+# Pipeline  : weekly_most_watched_content_by_view_count
+# Layer     : Gold
+# Schedule  : Every Monday at 06:00 UTC  (cron: 0 6 * * 1)
+# Maintained: Peacock Data Engineering
+# =============================================================================
+#
+# YAML LINT NOTE
+# --------------
+# This file is strict-YAML compliant (yamllint --strict).
+# Each environment block contains exactly ONE entry per key.
+# The anchor `defaults` provides base values that environment blocks override.
+#
+# CRITICAL FIX #1 (QA)
+# ---------------------
+# Original draft contained a duplicate key `catalog_table_input` in the `dev`
+# block (the first assignment was silently dropped by YAML parsers, and
+# `sessions_table_input` was never set).  Both keys are now distinct and
+# correctly named in every environment block.
+#
+# VACUUM RETENTION NOTE (Critical Fix #5 / Warning)
+# --------------------------------------------------
+# Delta's default safety threshold is 168 hours (7 days).
+# dev   → 24 h  : below threshold — the notebook disables the retention safety
+#                 check for dev before running VACUUM (see notebook Step 13).
+# stage → 168 h : raised from 72 h to match the Delta minimum, avoiding a
+#                 runtime error without requiring the safety-check override.
+# prod  → 336 h : 14-day retention; safety check remains enabled.
+#
+# TOP-N NOTE
+# ----------
+# `top_n: null` means no row cap — all ranked content is written.
+# Set to an integer (e.g. 100) to limit output to the top-N ranks.
+# The notebook widget honours this value at runtime.
+# =============================================================================
+
+defaults: &defaults
+  pipeline_name:    "weekly_most_watched_content_by_view_count"
+  output_table:     "gold_most_watched_content_by_view_count_weekly"
+  partition_col:    "week_start_date"
+
+  # Input tables
+  sessions_table_input:  "viewing_sessions"
+  catalog_table_input:   "content_catalog"
+
+  # Databricks cluster
+  # NOTE: Spark version is defined here (single source of truth).
+  # The DAG reads this value via the Airflow Variable loader so both
+  # the DAG and notebook always use the same runtime.
+  # 13.3 LTS EOL: ~early 2026 — plan upgrade before deprecation.
+  spark_version:         "13.3.x-scala2.12"
+  node_type_id:          "i3.xlarge"
+  num_workers:           4
+  autotermination_minutes: 60
+
+  # Delta write
+  write_mode:            "overwrite"
+  partition_overwrite_mode: "dynamic"   # partition-safe; only rewrites the
+                                        # affected week_start_date partition
+
+  # Delta maintenance
+  # vacuum_retain_hours is passed as a notebook widget so the notebook
+  # does NOT hardcode a dev/prod binary split.  The notebook reads this
+  # value and applies the correct guard per environment (see notebook Step 13).
+  optimize_zorder_col:   "content_id"
+
+  # Optional output cap — null = write all ranked content
+  top_n: null
+
+  # Alerting
+  slack_channel: "#peacock-data-alerts"
+  slack_connection_id: "slack_peacock_alerts"
+
+  # Databricks connection
+  databricks_conn_id: "databricks_default"
+
+# -----------------------------------------------------------------------------
+# DEV
+# -----------------------------------------------------------------------------
+dev:
+  <<: *defaults
+  database:              "dev"
+  # CRITICAL FIX #1: Two distinct keys — no duplicates
+  sessions_table_input:  "dev_viewing_sessions"
+  catalog_table_input:   "dev_content_catalog"
+  output_table:          "dev_gold_most_watched_content_by_view_count_weekly"
+  notebook_path:         "/Repos/dev/peacock_pipelines/weekly_most_watched_content_by_view_count_notebook"
+  num_workers:           2
+  # 24 h — below Delta's 168 h safety threshold.
+  # Notebook will disable `spark.databricks.delta.retentionDurationCheck.enabled`
+  # before VACUUM and re-enable it after (see notebook Step 13).
+  vacuum_retain_hours:   24
+  slack_channel:         "#peacock-data-dev"
+
+# -----------------------------------------------------------------------------
+# STAGE
+# -----------------------------------------------------------------------------
+stage:
+  <<: *defaults
+  database:              "stage"
+  sessions_table_input:  "stage_viewing_sessions"
+  catalog_table_input:   "stage_content_catalog"
+  output_table:          "stage_gold_most_watched_content_by_view_count_weekly"
+  notebook_path:         "/Repos/stage/peacock_pipelines/weekly_most_watched_content_by_view_count_notebook"
+  num_workers:           3
+  # Raised from 72 h to 168 h to meet Delta's minimum safety threshold,
+  # avoiding the VACUUM runtime error without needing the retention override.
+  vacuum_retain_hours:   168
+  slack_channel:         "#peacock-data-stage"
+
+# -----------------------------------------------------------------------------
+# PROD
+# -----------------------------------------------------------------------------
+prod:
+  <<: *defaults
+  database:              "gold"
+  sessions_table_input:  "viewing_sessions"
+  catalog_table_input:   "content_catalog"
+  output_table:          "gold_most_watched_content_by_view_count_weekly"
+  notebook_path:         "/Repos/prod/peacock_pipelines/weekly_most_watched_content_by_view_count_notebook"
+  num_workers:           4
+  # 14-day retention; well above Delta's 168 h minimum — no override needed.
+  vacuum_retain_hours:   336
+  slack_channel:         "#peacock-data-alerts"

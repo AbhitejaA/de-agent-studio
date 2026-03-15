@@ -1,0 +1,92 @@
+# =============================================================================
+# Pipeline  : top_10_subscribers_by_watch_time
+# Layer     : Gold
+# Output    : gold_top10_subscribers_by_watch_time_daily
+# Schedule  : Daily @ 07:00 UTC  (0 7 * * *)
+# Author    : Senior Data Engineering – Peacock TV
+# =============================================================================
+
+pipeline:
+  name: top_10_subscribers_by_watch_time
+  description: >
+    Joins subscriber_profiles with viewing_sessions, aggregates total watch
+    time per subscriber for the previous completed day, ranks them in
+    descending order, and persists the top-N to the Gold layer.
+  layer: gold
+  schedule: "0 7 * * *"
+
+  # ── QA Fix (critical): top_n is the single source of truth.
+  #    The DAG passes this to the notebook via NOTEBOOK_PARAMS so the
+  #    notebook and SQL both read it from the widget — never hardcoded.
+  top_n: 10
+
+  input_tables:
+    - subscriber_profiles
+    - viewing_sessions
+
+  output_table: gold_top10_subscribers_by_watch_time_daily
+  partition_column: run_date
+  write_mode: overwrite          # partition-safe Delta overwrite
+  zorder_column: subscriber_id   # co-locate subscriber data within partition
+
+# ── Environment-specific overrides ────────────────────────────────────────────
+environments:
+
+  dev:
+    catalog: dev_catalog
+    input_schema: silver
+    output_schema: gold
+    databricks_conn_id: databricks_dev
+    cluster:
+      spark_version: "13.3.x-scala2.12"
+      node_type_id: Standard_DS3_v2
+      num_workers: 1
+      auto_termination_minutes: 30
+    retries: 1
+    retry_delay_minutes: 5
+    timeout_seconds: 1800        # 30 min cap in dev
+    slack_channel: "#data-pipeline-alerts-dev"
+
+  stage:
+    catalog: stage_catalog
+    input_schema: silver
+    output_schema: gold
+    databricks_conn_id: databricks_stage
+    cluster:
+      spark_version: "13.3.x-scala2.12"
+      node_type_id: Standard_DS4_v2
+      num_workers: 2
+      auto_termination_minutes: 45
+    retries: 2
+    retry_delay_minutes: 10
+    timeout_seconds: 2700        # 45 min cap in stage
+    slack_channel: "#data-pipeline-alerts-stage"
+
+  prod:
+    catalog: prod_catalog
+    input_schema: silver
+    output_schema: gold
+    databricks_conn_id: databricks_prod
+    cluster:
+      spark_version: "13.3.x-scala2.12"
+      node_type_id: Standard_DS5_v2
+      num_workers: 4             # QA Fix (warning): was 2, corrected to 4
+      auto_termination_minutes: 60
+    retries: 3
+    retry_delay_minutes: 10
+    timeout_seconds: 3600        # 60 min hard cap in prod
+    slack_channel: "#data-pipeline-alerts"
+
+# ── Alerting ──────────────────────────────────────────────────────────────────
+alerting:
+  slack_webhook_conn_id: slack_webhook_peacock
+  notify_on:
+    - failure
+    - retry
+    - success                    # QA Fix (suggestion): success notification added
+  sla_minutes: 60               # QA Fix (suggestion): SLA miss alert at 60 min
+
+# ── Quality gates ─────────────────────────────────────────────────────────────
+quality_gates:
+  min_expected_rows: 1          # hard fail threshold  – pipeline errors if 0 rows
+  warn_below_rows: 10           # QA Fix (critical): warning if < top_n rows written
