@@ -1,0 +1,112 @@
+# =============================================================================
+# Pipeline : daily_churned_subscribers_30day_inactivity
+# Layer    : Gold
+# Owner    : Peacock Data Engineering
+# Schedule : 0 6 * * *  (06:00 UTC daily)
+# =============================================================================
+
+pipeline:
+  name: daily_churned_subscribers_30day_inactivity
+  layer: gold
+  output_table: gold_churned_subscribers_30day_inactivity
+  schedule: "0 6 * * *"
+  description: >
+    Identifies churned subscribers (is_active = FALSE) whose last watch activity
+    was more than 30 days ago, or who have no watch history at all.
+    Results are written to the gold Delta layer, partitioned by run_date.
+
+# ---------------------------------------------------------------------------
+# Environment-specific settings
+# ---------------------------------------------------------------------------
+environments:
+
+  dev:
+    catalog: dev_catalog
+    schema: peacock_core
+    input_tables:
+      subscriber_profiles: dev_catalog.peacock_core.subscriber_profiles
+      viewing_sessions:    dev_catalog.peacock_core.viewing_sessions
+    output_table:          dev_catalog.peacock_core.gold_churned_subscribers_30day_inactivity
+    databricks:
+      workspace_url:       https://dev-peacock.azuredatabricks.net
+      cluster:
+        spark_version:     "13.3.x-scala2.12"
+        node_type_id:      i3.xlarge
+        num_workers:       2
+        spot_fallback:     true
+      notebook_path:       /Repos/peacock-pipelines/dev/notebooks/daily_churned_subscribers_30day_inactivity_notebook
+      timeout_seconds:     3600
+    write:
+      mode:                overwrite
+      partition_by:        run_date
+      format:              delta
+    logging:
+      level:               DEBUG          # input row counts enabled in dev only
+      enable_input_counts: true
+
+  stage:
+    catalog: stage_catalog
+    schema: peacock_core
+    input_tables:
+      subscriber_profiles: stage_catalog.peacock_core.subscriber_profiles
+      viewing_sessions:    stage_catalog.peacock_core.viewing_sessions
+    output_table:          stage_catalog.peacock_core.gold_churned_subscribers_30day_inactivity
+    databricks:
+      workspace_url:       https://stage-peacock.azuredatabricks.net
+      cluster:
+        spark_version:     "13.3.x-scala2.12"
+        node_type_id:      i3.xlarge
+        num_workers:       3
+        spot_fallback:     true
+      notebook_path:       /Repos/peacock-pipelines/stage/notebooks/daily_churned_subscribers_30day_inactivity_notebook
+      timeout_seconds:     3600
+    write:
+      mode:                overwrite
+      partition_by:        run_date
+      format:              delta
+    logging:
+      level:               INFO
+      enable_input_counts: false          # disabled in stage/prod — avoid full scans
+
+  prod:
+    catalog: prod_catalog
+    schema: peacock_core
+    input_tables:
+      subscriber_profiles: prod_catalog.peacock_core.subscriber_profiles
+      viewing_sessions:    prod_catalog.peacock_core.viewing_sessions
+    output_table:          prod_catalog.peacock_core.gold_churned_subscribers_30day_inactivity
+    databricks:
+      workspace_url:       https://prod-peacock.azuredatabricks.net
+      cluster:
+        spark_version:     "13.3.x-scala2.12"
+        node_type_id:      i3.2xlarge
+        num_workers:       4
+        spot_fallback:     true
+      notebook_path:       /Repos/peacock-pipelines/prod/notebooks/daily_churned_subscribers_30day_inactivity_notebook
+      timeout_seconds:     3600
+    write:
+      mode:                overwrite
+      partition_by:        run_date
+      format:              delta
+    logging:
+      level:               INFO
+      enable_input_counts: false          # disabled in prod — avoid full scans on billions of rows
+
+# ---------------------------------------------------------------------------
+# Shared pipeline logic constants
+# ---------------------------------------------------------------------------
+logic:
+  inactivity_threshold_days: 30
+  churn_flag_column:         is_active
+  churn_flag_value:          false
+  join_key:                  subscriber_id
+  session_timestamp_column:  session_start_date
+
+# ---------------------------------------------------------------------------
+# Alerting
+# ---------------------------------------------------------------------------
+alerts:
+  slack:
+    channel:               "#data-pipeline-alerts"
+    conn_id:               slack_data_alerts
+    notify_on:             [failure, retry]
