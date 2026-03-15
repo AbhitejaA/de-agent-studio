@@ -54,14 +54,22 @@ If you receive a spec with type "fix":
 → regenerate all files with fixes applied
 → save and index all files as before
 
-Return response as JSON only:
+Apply Fixes fix — agents/builder.py system prompt:
+Find the last part that says Return response as JSON only: and replace with:
+After saving all files using save_file() and add_to_knowledge_base() tools,
+return a SMALL JSON summary only.
+Do NOT include file contents in the JSON.
+Files are already saved to disk — just list their names.
+
 {
     "status": "success" or "error",
     "pipeline_name": "...",
-    "files_created": ["file1.py", "file2.yml", ...],
-    "summary": "brief description of what was built",
-    "error": "error message if failed, null if success"
+    "files_created": ["file1_dag.py", "file2_config.yml", "file3_notebook.py", "file4.sql"],
+    "summary": "2-3 sentences maximum describing what was built",
+    "error": null
 }
+
+CRITICAL: Return ONLY this small JSON. No file contents. No extra text. No markdown.
 CRITICAL: Return ONLY a single JSON object.
 Do not include any text before or after the JSON.
 Do not include markdown code blocks.
